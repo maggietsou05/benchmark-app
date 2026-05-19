@@ -13,9 +13,20 @@ other front-ends or scheduled jobs.
 # venv\Scripts\python.exe -m streamlit run app.py
 
 
+import os
+
 import anthropic
 import pandas as pd
 import streamlit as st
+
+# On Streamlit Cloud the Anthropic API key lives in st.secrets, not in a
+# .env file — bridge it to os.environ BEFORE importing core, because core
+# constructs anthropic.Anthropic() at import time and that constructor
+# reads the key from the environment. Locally this no-ops (load_dotenv in
+# core handles the .env path).
+_secret_key = st.secrets.get("ANTHROPIC_API_KEY") if hasattr(st, "secrets") else None
+if _secret_key:
+    os.environ["ANTHROPIC_API_KEY"] = _secret_key
 
 from agent import run_comparison_agent
 from core import (
