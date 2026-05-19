@@ -5,7 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 .streamlit/
-benchmark.db
+# benchmark.db committed for Streamlit Cloud demo; revisit when moving to Supabase
 benchmark.db-journal
 venv/
 .venv/
