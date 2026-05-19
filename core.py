@@ -108,8 +108,14 @@ class ComparisonRow(BaseModel):
     group: str
     feature: str
     philips_value: str
-    competitor_value: str
-    verdict: Literal["Philips", "Competitor", "Tie", "Investigate"]
+    # One value per competitor, parallel to the competitor_labels passed to
+    # the Excel writer. Order matches the order the user picked competitors
+    # in the Generate tab.
+    competitor_values: list[str]
+    # "Philips" / "Tie" / "Investigate" / or the full_name of the winning
+    # competitor. With N competitors, "Competitor" alone is ambiguous, so
+    # the agent names the winner explicitly.
+    verdict: str
     notes: str
 
 
@@ -240,18 +246,30 @@ AUDIENCE: {audience}
 
 GOAL: {goal}
 {other_details_section}
-For each meaningful spec, output one row using the verdict scheme:
-Philips / Competitor / Tie / Investigate.
+You are comparing ONE Philips/OBM monitor against ONE OR MORE competitor
+monitors. For each meaningful spec, output one row. The row carries
+Philips's value, every competitor's value (one entry per competitor in
+the order given), and a verdict.
+
+Verdict scheme:
+- "Philips" — Philips beats every competitor on this spec
+- the full_name of a specific competitor — that competitor beats every
+  other monitor (including Philips) on this spec
+- "Tie" — at least two monitors are equivalent and lead
+- "Investigate" — subjective, marketing-only, or any side did not list
+  the value (data gap requiring human review)
 
 Notes should advance the GOAL above — frame each spec in terms of what
 helps the audience decide, not just restate the value. Skip rows where
-both sides are trivially identical or unspecified.
+all sides are trivially identical or unspecified.
 
 In the summary:
 - 5-8 sentences total
 - Address the audience defined above
 - Lead with the strongest decision-driver for that audience, not the
   most impressive raw spec
+- If multiple competitors are present, call out which competitor poses
+  which kind of threat to Philips
 """
 
 
@@ -528,55 +546,78 @@ def search_monitors(query: str) -> list[MonitorSummary]:
 
 
 def compute_comparison(
-    model_a: str, model_b: str, template: str | dict
-) -> tuple[Comparison, str, str]:
-    """Call Claude to compare two monitors using a view template.
+    model_a: str, competitor_models: list[str], template: str | dict
+) -> tuple[Comparison, str, list[str]]:
+    """Call Claude to compare one Philips/OBM monitor against N competitors.
 
     `template` is either a filename stem (e.g. "rd_deepdive") or an
     in-memory template dict (e.g. from build_custom_template). Returns
-    (comparison, label_a, label_b) — the structured result plus the display
-    names. Format-agnostic; see comparison_to_excel for the .xlsx writer.
+    (comparison, label_a, competitor_labels) — the structured result plus
+    the display names. Format-agnostic; see comparison_to_excel for the
+    .xlsx writer.
 
-    Raises ValueError if either monitor is missing, the template is unknown,
-    or the two models are identical. Propagates anthropic.APIError on failure.
+    Raises ValueError if any monitor is missing, the template is unknown,
+    or the Philips model also appears in the competitor list. Propagates
+    anthropic.APIError on failure.
     """
-    if model_a == model_b:
-        raise ValueError("Pick two different monitors.")
+    if not competitor_models:
+        raise ValueError("Pick at least one competitor.")
+    if model_a in competitor_models:
+        raise ValueError("Philips model also appears in the competitor list.")
+    if len(set(competitor_models)) != len(competitor_models):
+        raise ValueError("Pick distinct competitors — duplicates are not allowed.")
 
     tmpl = resolve_template(template)
 
+    all_models = [model_a] + competitor_models
     with get_conn() as conn:
+        placeholders = ",".join("?" * len(all_models))
         rows = conn.execute(
-            "SELECT id, model, full_name FROM products WHERE model IN (?, ?)",
-            (model_a, model_b),
+            f"SELECT id, model, full_name FROM products WHERE model IN ({placeholders})",
+            all_models,
         ).fetchall()
     by_model = {model: (pid, full_name) for pid, model, full_name in rows}
-    for m in (model_a, model_b):
+    for m in all_models:
         if m not in by_model:
             raise ValueError(f"Monitor with model '{m}' not found in DB.")
 
     pid_a, a_label = by_model[model_a]
-    pid_b, b_label = by_model[model_b]
     specs_a = _flat_specs(pid_a)
-    specs_b = _flat_specs(pid_b)
+
+    competitor_data: list[tuple[str, dict]] = []
+    for cm in competitor_models:
+        pid_c, c_label = by_model[cm]
+        specs_c = _flat_specs(pid_c)
+        if tmpl.get("groups"):
+            specs_c = {g: specs_c.get(g, {}) for g in tmpl["groups"] if specs_c.get(g)}
+        competitor_data.append((c_label, specs_c))
 
     if tmpl.get("groups"):
         specs_a = {g: specs_a.get(g, {}) for g in tmpl["groups"] if specs_a.get(g)}
-        specs_b = {g: specs_b.get(g, {}) for g in tmpl["groups"] if specs_b.get(g)}
+
+    competitor_blocks = "\n\n".join(
+        f"Competitor {i} ({c_label}):\n```json\n"
+        f"{json.dumps(c_specs, indent=2, ensure_ascii=False)}\n```"
+        for i, (c_label, c_specs) in enumerate(competitor_data, start=1)
+    )
 
     user_msg = (
-        f"Generate a competitive comparison between these two monitors.\n\n"
+        f"Generate a competitive comparison. ONE Philips/OBM monitor against "
+        f"{len(competitor_data)} competitor monitor(s).\n\n"
         f"Philips/OBM ({a_label}):\n```json\n"
         f"{json.dumps(specs_a, indent=2, ensure_ascii=False)}\n```\n\n"
-        f"Competitor ({b_label}):\n```json\n"
-        f"{json.dumps(specs_b, indent=2, ensure_ascii=False)}\n```\n\n"
-        "For each meaningful feature, output one row. Set verdict based on "
-        "which monitor wins:\n"
-        "- 'Philips' if Philips/OBM is better\n"
-        "- 'Competitor' if the competitor is better\n"
-        "- 'Tie' if equivalent\n"
-        "- 'Investigate' if subjective, marketing-only (e.g. dynamic contrast), "
-        "or one side did not list the value (data gap requiring human review)\n"
+        f"{competitor_blocks}\n\n"
+        "For each meaningful feature, output one row. `competitor_values` "
+        "must be a list with one entry per competitor, in the same order "
+        "as the competitors above.\n\n"
+        "Verdict scheme:\n"
+        "- 'Philips' if Philips/OBM beats every competitor\n"
+        "- the full_name of a competitor if it beats every other monitor\n"
+        "  (including Philips)\n"
+        "- 'Tie' if equivalent across the leaders\n"
+        "- 'Investigate' if subjective, marketing-only (e.g. dynamic "
+        "contrast), or any side did not list the value (data gap requiring "
+        "human review)\n"
     )
 
     response = _client.messages.parse(
@@ -590,7 +631,8 @@ def compute_comparison(
         messages=[{"role": "user", "content": user_msg}],
         output_format=Comparison,
     )
-    return response.parsed_output, a_label, b_label
+    competitor_labels = [label for label, _ in competitor_data]
+    return response.parsed_output, a_label, competitor_labels
 
 
 _SHEET_NAME_INVALID = re.compile(r'[\[\]\:\*\?\/\\]')
@@ -602,17 +644,100 @@ def _safe_sheet_name(name: str) -> str:
     return cleaned[:31] or "Sheet"
 
 
-def _resolve_headers(headers: list[str], label_a: str, label_b: str) -> list[str]:
-    """Replace generic 'Philips' / 'Competitor' headers with actual full names."""
+def _resolve_headers(
+    headers: list[str], label_a: str, competitor_labels: list[str]
+) -> list[str]:
+    """Replace generic 'Philips' / 'Competitor' headers with actual full names.
+
+    'Philips' (literal or `{philips}` placeholder) always swaps for label_a.
+    'Competitor' / `{competitor}` swaps for the first competitor's label — a
+    fallback for the rare YAML header that mentions the competitor outside
+    a per-competitor column. The per-competitor columns themselves are
+    expanded separately by `expand_columns_for_competitors`.
+    """
     out = []
+    primary = competitor_labels[0] if competitor_labels else ""
     for h in headers:
-        h = h.replace("{philips}", label_a).replace("{competitor}", label_b)
+        h = h.replace("{philips}", label_a).replace("{competitor}", primary)
         if h == "Philips":
             h = label_a
         elif h == "Competitor":
-            h = label_b
+            h = primary
         out.append(h)
     return out
+
+
+# Column keys that should be expanded into one column per competitor at render
+# time. The agent emits row-dict keys like "competitor_value_1", "_2", etc.
+_PER_COMPETITOR_PREFIX = "competitor_"
+
+
+def _is_per_competitor_key(key: str) -> bool:
+    return key == "competitor" or key.startswith(_PER_COMPETITOR_PREFIX)
+
+
+def expand_columns_for_competitors(
+    column_keys: list[str],
+    column_headers: list[str],
+    competitor_labels: list[str],
+) -> tuple[list[str], list[str]]:
+    """Expand any 'competitor_*' column into one column per competitor.
+
+    Example: ['feature', 'competitor_value', 'change_type'] with two
+    competitors → ['feature', 'competitor_value_1', 'competitor_value_2',
+    'change_type']. Each expanded column's header is the competitor's
+    full_name. Non-competitor columns pass through unchanged.
+    """
+    out_keys: list[str] = []
+    out_headers: list[str] = []
+    for key, header in zip(column_keys, column_headers):
+        if _is_per_competitor_key(key):
+            for idx, c_label in enumerate(competitor_labels, start=1):
+                out_keys.append(f"{key}_{idx}")
+                out_headers.append(c_label)
+        else:
+            out_keys.append(key)
+            out_headers.append(header)
+    return out_keys, out_headers
+
+
+def _comparison_row_to_dict(row: ComparisonRow) -> dict[str, str]:
+    """Flatten a ComparisonRow into the per-competitor key shape the xlsx
+    writer expects ('competitor_value_1', '_2', ...).
+    """
+    d: dict[str, str] = {
+        "group": row.group,
+        "feature": row.feature,
+        "philips_value": row.philips_value,
+        "verdict": row.verdict,
+        "notes": row.notes,
+    }
+    for i, val in enumerate(row.competitor_values, start=1):
+        d[f"competitor_value_{i}"] = "" if val is None else str(val)
+    return d
+
+
+def _verdict_fill_for_labels(competitor_labels: list[str]):
+    """Build a verdict-cell color rule that recognizes named competitors.
+
+    With N competitors, a verdict cell may contain a competitor's full_name
+    (= Philips lost on that row). Default `xlsx_styles.verdict_fill` only
+    knows the four legacy strings, so we wrap it.
+    """
+    competitor_lookup = {l.strip().lower() for l in competitor_labels if l}
+
+    def fill(value: str):
+        v = (value or "").strip().lower()
+        if not v:
+            return None
+        base = xlsx_styles.verdict_fill(value)
+        if base is not None:
+            return base
+        if v in competitor_lookup:
+            return xlsx_styles.LOSE_FILL
+        return None
+
+    return fill
 
 
 def _wb_to_bytes(wb: openpyxl.Workbook) -> bytes:
@@ -622,34 +747,40 @@ def _wb_to_bytes(wb: openpyxl.Workbook) -> bytes:
 
 
 def comparison_to_excel(
-    comparison: Comparison, label_a: str, label_b: str
+    comparison: Comparison, label_a: str, competitor_labels: list[str]
 ) -> bytes:
     """Single-workbook styled output for flat (legacy / Custom View) comparisons.
 
-    Signature is unchanged so MCP and earlier callers keep working; only the
-    visual output has been migrated to the shared xlsx_styles look.
+    `competitor_labels` lists every competitor (one or more), in the same
+    order their values appear in each ComparisonRow.competitor_values.
     """
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
+
+    base_keys = ["group", "feature", "philips_value", "competitor_value",
+                 "verdict", "notes"]
+    base_headers = ["Group", "Feature", "Philips", "Competitor",
+                    "Verdict", "Notes"]
+    expanded_keys, expanded_headers = expand_columns_for_competitors(
+        base_keys, base_headers, competitor_labels,
+    )
 
     sheet = wb.create_sheet("Comparison")
     xlsx_styles.write_styled_sheet(
         sheet,
         title="Comparison",
-        subtitle=xlsx_styles.subtitle_for(label_a, label_b),
-        column_keys=["group", "feature", "philips_value", "competitor_value", "verdict", "notes"],
-        column_headers=_resolve_headers(
-            ["Group", "Feature", "Philips", "Competitor", "Verdict", "Notes"],
-            label_a, label_b,
-        ),
-        rows=[r.model_dump() for r in comparison.rows],
+        subtitle=xlsx_styles.subtitle_for(label_a, competitor_labels),
+        column_keys=expanded_keys,
+        column_headers=_resolve_headers(expanded_headers, label_a, competitor_labels),
+        rows=[_comparison_row_to_dict(r) for r in comparison.rows],
+        color_rules={"verdict": _verdict_fill_for_labels(competitor_labels)},
     )
 
     summary_sheet = wb.create_sheet("Summary")
     xlsx_styles.write_narrative_sheet(
         summary_sheet,
         title="Summary",
-        subtitle=xlsx_styles.subtitle_for(label_a, label_b),
+        subtitle=xlsx_styles.subtitle_for(label_a, competitor_labels),
         narrative=comparison.summary,
     )
     return _wb_to_bytes(wb)
@@ -659,19 +790,27 @@ def block_to_xlsx(
     spec: BlockSpec,
     content: BlockContent,
     label_a: str,
-    label_b: str,
+    competitor_labels: list[str],
 ) -> bytes:
     """Render a single block as a standalone xlsx (marketing per-block downloads)."""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
     sheet = wb.create_sheet(_safe_sheet_name(spec.name))
+    expanded_keys, expanded_headers = expand_columns_for_competitors(
+        spec.columns, spec.headers, competitor_labels,
+    )
     xlsx_styles.write_styled_sheet(
         sheet,
         title=spec.name,
-        subtitle=xlsx_styles.subtitle_for(label_a, label_b),
-        column_keys=spec.columns,
-        column_headers=_resolve_headers(spec.headers, label_a, label_b),
+        subtitle=xlsx_styles.subtitle_for(label_a, competitor_labels),
+        column_keys=expanded_keys,
+        column_headers=_resolve_headers(expanded_headers, label_a, competitor_labels),
         rows=content.rows,
+        color_rules={
+            "verdict": _verdict_fill_for_labels(competitor_labels),
+            "winner": _verdict_fill_for_labels(competitor_labels),
+            "who_tells_better": _verdict_fill_for_labels(competitor_labels),
+        },
     )
     return _wb_to_bytes(wb)
 
@@ -681,26 +820,35 @@ def blocks_to_workbook(
     contents: list[BlockContent],
     summary_narrative: str,
     label_a: str,
-    label_b: str,
+    competitor_labels: list[str],
     summary_sheet_name: str = "Recommended for next launch",
 ) -> bytes:
     """Render every block + optional narrative-summary sheet into one workbook (R&D)."""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
+    color_rules = {
+        "verdict": _verdict_fill_for_labels(competitor_labels),
+        "winner": _verdict_fill_for_labels(competitor_labels),
+        "who_tells_better": _verdict_fill_for_labels(competitor_labels),
+    }
     contents_by_key = {c.block_key: c for c in contents}
     for spec in specs:
         content = contents_by_key.get(spec.key) or BlockContent(
             block_key=spec.key, narrative="", rows=[]
         )
         sheet = wb.create_sheet(_safe_sheet_name(spec.name))
+        expanded_keys, expanded_headers = expand_columns_for_competitors(
+            spec.columns, spec.headers, competitor_labels,
+        )
         xlsx_styles.write_styled_sheet(
             sheet,
             title=spec.name,
-            subtitle=xlsx_styles.subtitle_for(label_a, label_b),
-            column_keys=spec.columns,
-            column_headers=_resolve_headers(spec.headers, label_a, label_b),
+            subtitle=xlsx_styles.subtitle_for(label_a, competitor_labels),
+            column_keys=expanded_keys,
+            column_headers=_resolve_headers(expanded_headers, label_a, competitor_labels),
             rows=content.rows,
+            color_rules=color_rules,
         )
 
     if summary_narrative and summary_narrative.strip():
@@ -708,17 +856,21 @@ def blocks_to_workbook(
         xlsx_styles.write_narrative_sheet(
             sheet,
             title=summary_sheet_name,
-            subtitle=xlsx_styles.subtitle_for(label_a, label_b),
+            subtitle=xlsx_styles.subtitle_for(label_a, competitor_labels),
             narrative=summary_narrative,
         )
     return _wb_to_bytes(wb)
 
 
-def generate_comparison(model_a: str, model_b: str, template: str) -> bytes:
-    """Compare two monitors and return .xlsx bytes. Wraps compute + format.
+def generate_comparison(
+    model_a: str, competitor_models: list[str], template: str
+) -> bytes:
+    """Compare one Philips/OBM monitor against N competitors and return .xlsx bytes.
 
-    The returned workbook has two sheets: "Comparison" (one row per feature
-    with a Winner verdict) and "Summary" (Claude's narrative writeup).
+    The returned workbook has a "Comparison" sheet (one row per feature
+    with the winner named in the Verdict column) plus a "Summary" sheet.
     """
-    comparison, label_a, label_b = compute_comparison(model_a, model_b, template)
-    return comparison_to_excel(comparison, label_a, label_b)
+    comparison, label_a, competitor_labels = compute_comparison(
+        model_a, competitor_models, template,
+    )
+    return comparison_to_excel(comparison, label_a, competitor_labels)

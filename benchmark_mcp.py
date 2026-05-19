@@ -77,19 +77,27 @@ def list_templates_tool() -> list[dict]:
 
 
 @mcp.tool()
-def compare_monitors(model_a: str, model_b: str, template: str) -> dict:
-    """Compare two monitors and return the structured result as JSON.
+def compare_monitors(
+    model_a: str, competitor_models: list[str], template: str
+) -> dict:
+    """Compare one Philips/OBM monitor against one or more competitors.
 
-    `model_a` is treated as the Philips/OBM side, `model_b` as the competitor.
-    `template` is the key returned by list_templates_tool (e.g. "rd_deepdive").
+    `model_a` is the Philips/OBM side. `competitor_models` is a list of one
+    or more competitor model numbers — every entry is compared side by
+    side against the Philips monitor. `template` is the key returned by
+    list_templates_tool (e.g. "rd_deepdive").
 
-    Returns {rows: [...], summary: "...", label_a, label_b} — no file written.
+    Returns {label_a, competitor_labels, summary, rows: [...]} — no file
+    written. Each row carries `philips_value`, a parallel `competitor_values`
+    list (one per competitor in order), and a verdict naming the winner.
     Use export_comparison_excel if you also want the .xlsx on disk.
     """
-    comparison, label_a, label_b = compute_comparison(model_a, model_b, template)
+    comparison, label_a, competitor_labels = compute_comparison(
+        model_a, competitor_models, template,
+    )
     return {
         "label_a": label_a,
-        "label_b": label_b,
+        "competitor_labels": competitor_labels,
         "summary": comparison.summary,
         "rows": [r.model_dump() for r in comparison.rows],
     }
@@ -97,7 +105,10 @@ def compare_monitors(model_a: str, model_b: str, template: str) -> dict:
 
 @mcp.tool()
 def export_comparison_excel(
-    model_a: str, model_b: str, template: str, output_path: str
+    model_a: str,
+    competitor_models: list[str],
+    template: str,
+    output_path: str,
 ) -> str:
     """Generate the comparison and save it as an Excel workbook on disk.
 
@@ -105,12 +116,17 @@ def export_comparison_excel(
     where the .xlsx should be written. Returns a short status string with
     the resolved path. Overwrites any existing file at that location.
     """
-    comparison, label_a, label_b = compute_comparison(model_a, model_b, template)
-    xlsx_bytes = comparison_to_excel(comparison, label_a, label_b)
+    comparison, label_a, competitor_labels = compute_comparison(
+        model_a, competitor_models, template,
+    )
+    xlsx_bytes = comparison_to_excel(comparison, label_a, competitor_labels)
     out = Path(output_path).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(xlsx_bytes)
-    return f"Wrote {len(comparison.rows)} rows ({label_a} vs {label_b}) to {out}"
+    return (
+        f"Wrote {len(comparison.rows)} rows "
+        f"({label_a} vs {', '.join(competitor_labels)}) to {out}"
+    )
 
 
 if __name__ == "__main__":

@@ -8,11 +8,21 @@ and the manager-approved verdict scheme from
 example/benchmark_pipeline_handoff.md.
 """
 
+import re
 from datetime import date
 
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
+
+
+# "competitor_value_3" → base "competitor_value" so per-competitor expanded
+# columns share the base column's width and colour rule.
+_TRAILING_INDEX_RE = re.compile(r"_\d+$")
+
+
+def _base_key(col_key: str) -> str:
+    return _TRAILING_INDEX_RE.sub("", col_key)
 
 
 # ─── Brand palette (mirrors style.py for app/download consistency) ─
@@ -221,9 +231,12 @@ def write_styled_sheet(
             cell.alignment = BODY_ALIGN
             cell.border = THIN_BORDER
 
-            # Semantic colour (verdict / Y-N / change-type) wins over stripe
+            # Semantic colour (verdict / Y-N / change-type) wins over stripe.
+            # Exact-key match first, then strip a trailing "_<digits>" so
+            # expanded multi-competitor keys (e.g. "competitor_lists_it_2")
+            # share the base key's colour rule.
             colour = None
-            rule = rules.get(col_key)
+            rule = rules.get(col_key) or rules.get(_base_key(col_key))
             if rule:
                 colour = rule(value)
             if colour:
@@ -234,9 +247,11 @@ def write_styled_sheet(
     # Freeze the header so it stays visible when scrolling
     ws.freeze_panes = ws.cell(row=BODY_START_ROW, column=1)
 
-    # Column widths
+    # Column widths — same exact-then-base-key fallback.
     for col_idx, col_key in enumerate(column_keys, start=1):
-        width = COLUMN_WIDTHS.get(col_key, DEFAULT_COLUMN_WIDTH)
+        width = COLUMN_WIDTHS.get(col_key)
+        if width is None:
+            width = COLUMN_WIDTHS.get(_base_key(col_key), DEFAULT_COLUMN_WIDTH)
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
 
@@ -269,6 +284,15 @@ def write_narrative_sheet(
     ws.column_dimensions["A"].width = 110
 
 
-def subtitle_for(label_a: str, label_b: str) -> str:
-    """Standard subtitle string for every sheet."""
-    return f"{label_a} vs {label_b} — {date.today().isoformat()}"
+def subtitle_for(label_a: str, competitor_labels: str | list[str]) -> str:
+    """Standard subtitle string for every sheet.
+
+    Accepts either a single competitor label (legacy callers) or a list
+    (N-competitor callers). When the list has many competitors the
+    subtitle reads "<Philips> vs <c1>, <c2>, <c3> — <date>".
+    """
+    if isinstance(competitor_labels, str):
+        competitor_part = competitor_labels
+    else:
+        competitor_part = ", ".join(competitor_labels) or "(no competitors)"
+    return f"{label_a} vs {competitor_part} — {date.today().isoformat()}"

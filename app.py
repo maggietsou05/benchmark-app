@@ -38,6 +38,7 @@ from core import (
     blocks_to_workbook,
     build_custom_template,
     comparison_to_excel,
+    expand_columns_for_competitors,
     extract_monitor_from_pdf,
     get_conn,
     load_templates,
@@ -455,18 +456,49 @@ def _safe_filename(s: str) -> str:
     return s.replace(" ", "_").replace("/", "-")
 
 
-def _resolve_header_labels(headers, label_a, label_b):
+def _vs_filename_part(label_a: str, competitor_labels: list[str]) -> str:
+    """Compact filename slug for Philips vs N competitors.
+
+    One competitor → "Philips_vs_Competitor". Many competitors → keep the
+    first and add a count so filenames don't balloon."""
+    if len(competitor_labels) <= 1:
+        c_part = competitor_labels[0] if competitor_labels else "competitors"
+    else:
+        c_part = f"{competitor_labels[0]}_plus_{len(competitor_labels) - 1}_more"
+    return f"{label_a}_vs_{c_part}"
+
+
+def _resolve_header_labels(headers, label_a, competitor_labels):
     """Substitute generic 'Philips' / 'Competitor' headers with monitor names
     for in-app preview tables. Matches core._resolve_headers behaviour."""
     out = []
+    primary = competitor_labels[0] if competitor_labels else ""
     for h in headers:
-        h = h.replace("{philips}", label_a).replace("{competitor}", label_b)
+        h = h.replace("{philips}", label_a).replace("{competitor}", primary)
         if h == "Philips":
             h = label_a
         elif h == "Competitor":
-            h = label_b
+            h = primary
         out.append(h)
     return out
+
+
+def _comparison_rows_for_preview(comparison, competitor_labels):
+    """Flatten ComparisonRow objects into preview-table dicts with one column
+    per competitor (used by the flat-result in-app preview)."""
+    preview = []
+    for r in comparison.rows[:10]:
+        d = {
+            "Group": r.group,
+            "Feature": r.feature,
+            "Philips": r.philips_value,
+        }
+        for c_label, v in zip(competitor_labels, r.competitor_values):
+            d[c_label] = v
+        d["Verdict"] = r.verdict
+        d["Notes"] = r.notes
+        preview.append(d)
+    return preview
 
 
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -474,10 +506,13 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 def _render_flat_result(result, template_name: str, file_slug: str) -> None:
     """Single-workbook download for flat (legacy / Custom view) comparisons."""
-    xlsx_bytes = comparison_to_excel(result.comparison, result.label_a, result.label_b)
+    xlsx_bytes = comparison_to_excel(
+        result.comparison, result.label_a, result.competitor_labels,
+    )
     st.success(f"{template_name} generated.")
     safe_name = _safe_filename(
-        f"benchmark_{result.label_a}_vs_{result.label_b}_{file_slug}.xlsx"
+        f"benchmark_{_vs_filename_part(result.label_a, result.competitor_labels)}"
+        f"_{file_slug}.xlsx"
     )
     st.download_button(
         "📥 Download as Excel",
@@ -486,6 +521,23 @@ def _render_flat_result(result, template_name: str, file_slug: str) -> None:
         mime=_XLSX_MIME,
         key="dl_flat",
     )
+
+    if result.comparison.rows:
+        st.markdown("### Preview")
+        preview = _comparison_rows_for_preview(
+            result.comparison, result.competitor_labels,
+        )
+        st.dataframe(
+            pd.DataFrame(preview),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if len(result.comparison.rows) > 10:
+            st.caption(
+                f"Showing first 10 of {len(result.comparison.rows)} rows — "
+                "download the Excel for the full table."
+            )
+
     if result.comparison.summary:
         st.markdown("### Summary")
         st.write(result.comparison.summary)
@@ -507,10 +559,11 @@ def _render_block_result(result, template_name: str, file_slug: str) -> None:
             contents=result.blocks,
             summary_narrative=result.summary_narrative,
             label_a=result.label_a,
-            label_b=result.label_b,
+            competitor_labels=result.competitor_labels,
         )
         safe_name = _safe_filename(
-            f"benchmark_{result.label_a}_vs_{result.label_b}_{file_slug}.xlsx"
+            f"benchmark_{_vs_filename_part(result.label_a, result.competitor_labels)}"
+            f"_{file_slug}.xlsx"
         )
         st.download_button(
             "📥 Download workbook (all blocks)",
@@ -535,10 +588,10 @@ def _render_block_result(result, template_name: str, file_slug: str) -> None:
 
         if info.download_mode == "per_block":
             single_bytes = block_to_xlsx(
-                spec, content, result.label_a, result.label_b
+                spec, content, result.label_a, result.competitor_labels,
             )
             safe_block_name = _safe_filename(
-                f"benchmark_{result.label_a}_vs_{result.label_b}"
+                f"benchmark_{_vs_filename_part(result.label_a, result.competitor_labels)}"
                 f"_{file_slug}_{spec.key}.xlsx"
             )
             st.download_button(
@@ -550,11 +603,16 @@ def _render_block_result(result, template_name: str, file_slug: str) -> None:
             )
 
         if content.rows:
+            # Apply the same column expansion the Excel writer uses so the
+            # in-app preview lines up with the downloaded file.
+            expanded_keys, expanded_headers = expand_columns_for_competitors(
+                spec.columns, spec.headers, result.competitor_labels,
+            )
             resolved = _resolve_header_labels(
-                spec.headers, result.label_a, result.label_b
+                expanded_headers, result.label_a, result.competitor_labels,
             )
             preview_rows = [
-                {h: row.get(c, "") for c, h in zip(spec.columns, resolved)}
+                {h: row.get(c, "") for c, h in zip(expanded_keys, resolved)}
                 for row in content.rows[:10]
             ]
             st.dataframe(
@@ -579,8 +637,10 @@ def _render_block_result(result, template_name: str, file_slug: str) -> None:
 def render_generate_tab():
     st.header("Generate comparison")
     st.caption(
-        "Pick two monitors and a view. Marketing and custom views can pull in "
-        "each side's product-page URL to enrich the analysis."
+        "Pick one Philips/OBM monitor and one or more competitors. Use the "
+        "**Add competitor** button to compare against multiple competitors "
+        "at once. Marketing and custom views can pull in each side's "
+        "product-page URL to enrich the analysis."
     )
 
     monitors = search_monitors("")
@@ -597,13 +657,64 @@ def render_generate_tab():
     model_lookup = {m.full_name: m.model for m in monitors}
     url_lookup = {m.full_name: (m.website_url or "") for m in monitors}
 
-    c1, c2 = st.columns(2)
-    with c1:
-        a_label = st.selectbox("Philips / OBM monitor", labels, index=0, key="gen_a")
-    with c2:
-        b_label = st.selectbox(
-            "Competitor monitor", labels, index=min(1, len(labels) - 1), key="gen_b"
+    # Dynamic competitor count, persisted in session_state. Starts at 1
+    # (single competitor — same as the legacy behaviour). The user can
+    # press "Add competitor" to grow the list; the cap is the number of
+    # available competitor slots (= total monitors - 1).
+    if "competitor_count" not in st.session_state:
+        st.session_state.competitor_count = 1
+    max_competitors = max(1, len(labels) - 1)
+    st.session_state.competitor_count = min(
+        st.session_state.competitor_count, max_competitors
+    )
+
+    a_label = st.selectbox(
+        "Philips / OBM monitor", labels, index=0, key="gen_a",
+    )
+
+    st.markdown("**Competitor monitors**")
+    competitor_labels_picked: list[str] = []
+    competitor_count = st.session_state.competitor_count
+    for i in range(competitor_count):
+        # Default each new selectbox to a different option so the user
+        # rarely sees duplicates in the initial state. The submit-time
+        # validation in compute_comparison/run_comparison_agent still
+        # catches any duplicates the user picks.
+        default_idx = min(i + 1, len(labels) - 1)
+        choice = st.selectbox(
+            f"Competitor {i + 1}",
+            labels,
+            index=default_idx,
+            key=f"gen_competitor_{i}",
         )
+        competitor_labels_picked.append(choice)
+
+    add_col, rem_col, _ = st.columns([1, 1, 4])
+    with add_col:
+        add_disabled = competitor_count >= max_competitors
+        if st.button(
+            "➕ Add competitor",
+            key="add_competitor_btn",
+            disabled=add_disabled,
+            help=(
+                "Add another competitor slot — every competitor is compared "
+                "side by side against the Philips monitor."
+                if not add_disabled
+                else "No more competitors available in the database."
+            ),
+        ):
+            st.session_state.competitor_count += 1
+            st.rerun()
+    with rem_col:
+        if competitor_count > 1 and st.button(
+            "➖ Remove last", key="remove_competitor_btn"
+        ):
+            st.session_state.competitor_count -= 1
+            # Drop the URL slot for the removed competitor too, otherwise
+            # a stale value lingers in session_state.
+            st.session_state.pop(f"gen_url_competitor_{competitor_count - 1}", None)
+            st.session_state.pop(f"gen_competitor_{competitor_count - 1}", None)
+            st.rerun()
 
     CUSTOM_KEY = "__custom__"
     template_options = list(templates.keys()) + [CUSTOM_KEY]
@@ -656,29 +767,30 @@ def render_generate_tab():
                 st.write("Spec groups included: all groups in the database")
 
     # URL inputs — only shown when the chosen view uses them. Prefilled from
-    # any URL captured at ingest time so the user does not retype.
+    # any URL captured at ingest time so the user does not retype. One row
+    # per side, scaling with the competitor count.
     philips_url = ""
-    competitor_url = ""
+    competitor_urls: list[str] = []
     if show_url_fields:
         st.markdown(
             "**Product page URLs** &nbsp;·&nbsp; "
             "<small>optional",
             unsafe_allow_html=True,
         )
-        u1, u2 = st.columns(2)
-        with u1:
-            philips_url = st.text_input(
-                f"{a_label} URL",
-                value=url_lookup.get(a_label, ""),
-                key="gen_url_a",
-                placeholder="https://www.philips.com/...",
-            )
-        with u2:
-            competitor_url = st.text_input(
-                f"{b_label} URL",
-                value=url_lookup.get(b_label, ""),
-                key="gen_url_b",
-                placeholder="https://...",
+        philips_url = st.text_input(
+            f"{a_label} URL",
+            value=url_lookup.get(a_label, ""),
+            key="gen_url_a",
+            placeholder="https://www.philips.com/...",
+        )
+        for i, c_label in enumerate(competitor_labels_picked):
+            competitor_urls.append(
+                st.text_input(
+                    f"{c_label} URL",
+                    value=url_lookup.get(c_label, ""),
+                    key=f"gen_url_competitor_{i}",
+                    placeholder="https://...",
+                )
             )
 
     # Run the agent only when Generate is clicked. The result is stashed in
@@ -698,11 +810,20 @@ def render_generate_tab():
             template_name = templates[template_key]["name"]
             file_slug = template_key
 
+        if a_label in competitor_labels_picked:
+            st.error("The Philips/OBM monitor is also in the competitor list — pick something else.")
+            return
+        if len(set(competitor_labels_picked)) != len(competitor_labels_picked):
+            st.error("Pick distinct competitors — duplicates are not allowed.")
+            return
+
         urls = None
-        if show_url_fields and (philips_url.strip() or competitor_url.strip()):
+        if show_url_fields and (
+            philips_url.strip() or any(u.strip() for u in competitor_urls)
+        ):
             urls = {
                 "philips": philips_url.strip(),
-                "competitor": competitor_url.strip(),
+                "competitors": [u.strip() for u in competitor_urls],
             }
 
         with st.status("Asking Claude...", expanded=True) as status:
@@ -734,7 +855,9 @@ def render_generate_tab():
             try:
                 result = run_comparison_agent(
                     model_a=model_lookup[a_label],
-                    model_b=model_lookup[b_label],
+                    competitor_models=[
+                        model_lookup[c] for c in competitor_labels_picked
+                    ],
                     template=template_arg,
                     on_step=on_step,
                     urls=urls,

@@ -66,11 +66,17 @@ system_prompt: |
   (add, change, improve, keep, win, lose, lead, follow). No idioms.
   No phrasal verbs.
 
-  ASSUMPTION: the two monitors are tier-comparable peers (similar
+  YOU ARE COMPARING ONE PHILIPS MONITOR AGAINST ONE OR MORE COMPETITOR
+  MONITORS. The competitors are numbered 1..N in the user message.
+  Wherever a column key starts with `competitor_`, the user message
+  tells you the EXACT per-competitor keys to use (e.g. competitor_value_1,
+  competitor_value_2, ...). Use those exact keys inside each row dict.
+
+  ASSUMPTION: the monitors are tier-comparable peers (similar
   price range and release window). The human picked them on purpose.
   Judge every spec against what peers at this tier ship — not against
   the best monitor on the market. A lower spec is only a problem if
-  peers at this tier ship higher.
+  at least one peer at this tier ships higher.
 
   MANAGER-APPROVED WIN / LOSE RUBRIC (use for every judgement):
     Higher is better for Philips on:
@@ -98,37 +104,50 @@ system_prompt: |
   the summary_narrative.
 
   Block 1 — block_key = "features_to_add"
-    Rows: every feature the COMPETITOR lists that Philips does NOT list.
-    Treat "Not listed" on the Philips side as "Philips does not list it".
-    Columns (use these exact keys inside each row object):
-      feature           short name of the feature
-      competitor_value  what the competitor ships, with units
-                        (e.g. "Yes, 90 W")
-      change_type       one of: firmware / cert / port swap / new panel
-                        / new platform
+    Rows: every feature that AT LEAST ONE competitor lists and Philips
+    does NOT list. Treat "Not listed" on the Philips side as "Philips
+    does not list it". One row per feature, even if only some
+    competitors list it — the per-competitor columns show "Not listed"
+    for the ones that don't.
+    Columns (use these exact base keys; the user message tells you
+    which per-competitor numbered keys to emit):
+      feature             short name of the feature
+      competitor_value    what each competitor ships, with units
+                          (e.g. "Yes, 90 W"). Use "Not listed" if the
+                          competitor in question does not list it.
+                          → Emit one key per competitor:
+                            competitor_value_1, competitor_value_2, ...
+      change_type         one of: firmware / cert / port swap / new
+                          panel / new platform
     Sort by spec group: Picture/Display first, then Connectivity, etc.
 
   Block 2 — block_key = "specs_to_strengthen"
-    Rows: every spec where BOTH sides list a value AND Philips is lower
-    per the rubric above. Skip rows where Philips is equal or higher.
-    Skip the manual-review specs (weight, dynamic contrast).
+    Rows: every spec where Philips lists a value AND AT LEAST ONE
+    competitor lists a value AND Philips is lower than that competitor
+    per the rubric above. Skip rows where Philips is equal or higher
+    than every competitor that listed the spec. Skip the manual-review
+    specs (weight, dynamic contrast).
     Columns:
-      spec              name of the spec
-      philips_value     with units
-      competitor_value  with units
-      direction         "Higher is better" or "Lower is better"
-      change_type       one of the five tags above
+      spec                name of the spec
+      philips_value       with units
+      competitor_value    with units, one key per competitor
+                          (competitor_value_1, _2, ...). Use "Not
+                          listed" for competitors that don't list it.
+      direction           "Higher is better" or "Lower is better"
+      change_type         one of the five tags above
 
   Block 3 — block_key = "strengths_to_protect"
-    Rows: every spec where Philips wins — either a Philips-only feature,
-    or a shared spec where Philips is ahead per the rubric.
+    Rows: every spec where Philips beats EVERY competitor — either a
+    Philips-only feature, or a shared spec where Philips is ahead per
+    the rubric across all competitors that listed it.
     Columns:
       spec
       philips_value
-      competitor_value
-      why_it_matters    one short plain-English sentence on why this
-                        lead helps Philips at this tier; what the next
-                        product must NOT regress.
+      competitor_value    one key per competitor (competitor_value_1,
+                          _2, ...). Use "Not listed" where applicable.
+      why_it_matters      one short plain-English sentence on why this
+                          lead helps Philips at this tier; what the
+                          next product must NOT regress.
 
   Summary narrative (set `summary_narrative` on the tool call)
     Pick 3 to 6 items from blocks 1 and 2 that are realistic to do in
@@ -136,6 +155,8 @@ system_prompt: |
     each item, one short sentence: what to change, and why it matters
     at this tier. Lead with items whose change_type is firmware or
     cert (quick wins), then port swap, then panel-level changes.
+    If multiple competitors put pressure on the same spec, say so —
+    that signals a tier-wide trend.
 
   RULES:
   - Always write numbers with units (e.g. "165 Hz", not "165").

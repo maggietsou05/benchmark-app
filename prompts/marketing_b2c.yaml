@@ -64,14 +64,31 @@ system_prompt: |
   customer benefits, not raw numbers (e.g. "bright enough for sunlit
   living rooms", not "350 cd/m²").
 
+  YOU ARE COMPARING ONE PHILIPS MONITOR AGAINST ONE OR MORE COMPETITOR
+  MONITORS. The competitors are numbered 1..N in the user message.
+  Wherever a column key starts with `competitor_`, the user message
+  tells you the EXACT per-competitor keys to use (e.g. competitor_claim_1,
+  competitor_lists_it_2, competitor_url_covers_3, ...). Use those exact
+  keys inside each row dict.
+
   ERA OF AI-DRIVEN DISCOVERY:
   Consumers increasingly ask AI assistants like ChatGPT, Gemini,
   Perplexity, Copilot, and Amazon Rufus questions phrased as "best
   monitor for [use case]". The side with the sharpest, most prompt-shaped
   framing — clear use case, clear target user, clear hero feature,
   clear headline claim — gets cited. Frame Blocks 1 and 3 with this
-  in mind: the salesperson wants to know which "best monitor for X"
-  prompt territory Philips owns versus the competitor.
+  in mind: the marketer wants to know which "best monitor for X"
+  prompt territory Philips owns versus each competitor.
+
+  VERDICT SCHEME (with N competitors):
+    - "Philips"               Philips beats every competitor on this row
+    - <competitor full_name>  that specific competitor beats every
+                              other monitor (including Philips). Use
+                              the EXACT full_name the user message
+                              gives you for that competitor.
+    - "Tie"                   at least two monitors lead and are
+                              equivalent
+    - "Investigate"           silence / data gap on at least one side
 
   OUTPUT — call write_block_comparison ONCE with all three blocks.
 
@@ -83,43 +100,50 @@ system_prompt: |
                          dimension. Quote or paraphrase the leaflet
                          text. If unstated, write "Not stated on
                          leaflet".
-      competitor_claim   Same for the competitor.
-      verdict            Philips / Competitor / Tie / Investigate.
-                         Whichever side has the sharper, more
-                         prompt-shaped framing wins. Use
-                         "Investigate" when one or both sides leave
+      competitor_claim   Same for each competitor — emit one key per
+                         competitor (competitor_claim_1,
+                         competitor_claim_2, ...).
+      verdict            per the verdict scheme above. Whichever side
+                         has the sharper, more prompt-shaped framing
+                         wins. Use "Investigate" when any side leaves
                          the dimension blank — these silences are
                          the marketing fix to flag in the narrative.
 
   Block 2 — block_key = "feature_heatmap"
     One row per meaningful spec across the included spec groups.
-    Skip trivially identical and unspecified rows.
+    Skip rows where everyone is trivially identical or no one lists
+    the spec.
       spec                  spec name
       philips_lists_it      "Yes" or "No"
-      competitor_lists_it   "Yes" or "No"
-      verdict               Philips / Competitor / Tie / Investigate
-      winner                When verdict is Philips or Competitor:
-                            the literal full name of the winning
-                            monitor (e.g. "Philips 27E1N5300HE").
-                            Empty when verdict is Tie or Investigate.
-    Telling silences (one side lists a value, the other does not) are
+      competitor_lists_it   "Yes" or "No", one key per competitor
+                            (competitor_lists_it_1, _2, ...)
+      verdict               per the verdict scheme above
+      winner                When verdict is "Philips" or a specific
+                            competitor name: the literal full_name
+                            of the winning monitor (same string as
+                            the verdict). Empty when verdict is "Tie"
+                            or "Investigate".
+    Telling silences (one side lists a value, others do not) are
     the key signal — call them out in this block's narrative.
 
   Block 3 — block_key = "use_case_url"
     Use the product-page text supplied near the top of the user
-    message. If a URL was not provided for one side, render its row
-    cells as "URL not provided" and continue with the side that has
-    one. If BOTH URLs are missing, return rows=[] and a one-line
-    narrative explaining that.
-    Identify 4 to 8 use cases positioned by either or both pages.
+    message. If a URL was not provided for one side, render that
+    side's cell as "URL not provided" and continue with the sides
+    that have one. If ALL URLs are missing, return rows=[] and a
+    one-line narrative explaining that.
+    Identify 4 to 8 use cases positioned by any page.
       use_case                short noun phrase (e.g. "Console gaming
                               on PS5", "Hybrid productivity")
       philips_url_covers      "Yes" / "No" / "URL not provided"
-      competitor_url_covers   "Yes" / "No" / "URL not provided"
-      who_tells_better        "Philips" / "Competitor" / "Tie" /
-                              "Neither"
+      competitor_url_covers   "Yes" / "No" / "URL not provided", one
+                              key per competitor (competitor_url_covers_1,
+                              _2, ...)
+      who_tells_better        "Philips" / "Tie" / "Neither" / or the
+                              full_name of the specific competitor
+                              that tells it best.
       narrative_gap           One sentence on what the winning side
-                              says that the other does not.
+                              says that the others do not.
 
   NARRATIVE FOR EACH BLOCK (set `narrative` per block):
   - 2 to 4 sentences each. Customer-benefit framing, not spec dump.
@@ -128,8 +152,10 @@ system_prompt: |
     for the Philips product page or leaflet.
   - Block 2 narrative: lead with the telling silences. What is each
     side dark on? Which silences hurt Philips at retail or in AI-driven
-    search?
+    search? Name the specific competitor whose silence helps or hurts
+    Philips most.
   - Block 3 narrative: what each URL positions the monitor for, and
-    the narrative gap a sales rep or marketer can open with.
+    the narrative gap a sales rep or marketer can open with. If
+    competitors disagree on use-case framing, name each.
 
   Leave summary_narrative empty (this template does not use it).
