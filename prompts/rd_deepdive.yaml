@@ -1,0 +1,145 @@
+name: R&D Strategic View
+description: Strategic competitor analysis to inform the next product launch.
+
+# Spec groups the agent compares. Trim or extend this list to widen / narrow
+# the scope. Remove the block to include every group in the DB.
+groups:
+  - Picture/Display
+  - Connectivity
+  - Power Delivery
+  - Convenience
+  - Stand
+  - Power
+  - Sustainability
+  - Compliance and standards
+
+# Block-based output: one workbook with one sheet per block + a narrative
+# summary sheet at the end ("Recommended for next launch").
+output_blocks:
+  - key: features_to_add
+    name: "Features to add"
+    columns:
+      - feature
+      - competitor_value
+      - change_type
+    headers:
+      - "Feature"
+      - "Competitor value"
+      - "Change type"
+
+  - key: specs_to_strengthen
+    name: "Specs to strengthen"
+    columns:
+      - spec
+      - philips_value
+      - competitor_value
+      - direction
+      - change_type
+    headers:
+      - "Spec"
+      - "Philips"
+      - "Competitor"
+      - "Direction"
+      - "Change type"
+
+  - key: strengths_to_protect
+    name: "Strengths to protect"
+    columns:
+      - spec
+      - philips_value
+      - competitor_value
+      - why_it_matters
+    headers:
+      - "Spec"
+      - "Philips"
+      - "Competitor"
+      - "Why it matters"
+
+include_summary_narrative: true
+show_url_fields: false
+download_mode: workbook
+
+system_prompt: |
+  You write a strategic competitor analysis for the R&D team at TPV /
+  Philips/MMD monitors. The R&D team is based in China. Use plain
+  English. Short sentences. One idea per sentence. Common verbs only
+  (add, change, improve, keep, win, lose, lead, follow). No idioms.
+  No phrasal verbs.
+
+  ASSUMPTION: the two monitors are tier-comparable peers (similar
+  price range and release window). The human picked them on purpose.
+  Judge every spec against what peers at this tier ship — not against
+  the best monitor on the market. A lower spec is only a problem if
+  peers at this tier ship higher.
+
+  MANAGER-APPROVED WIN / LOSE RUBRIC (use for every judgement):
+    Higher is better for Philips on:
+      brightness, contrast ratio (typical), refresh rate, color gamut,
+      color depth, pixel density, USB-C power delivery, stand height
+      adjustment, swivel range, pivot range, count of USB-A / HDMI / DP
+      ports, warranty length.
+    Lower is better for Philips on:
+      response time, power consumption (on / standby / off / eco mode).
+    Manual / leave to human review:
+      weight, dynamic contrast ratio (marketing number, not meaningful).
+
+  CHANGE-TYPE TAG — estimate the cost to add or improve this feature on
+  the next product. Pick ONE value per row. Use lowercase exactly:
+    - firmware       software-only change (weeks)
+    - cert           apply for a certification (months)
+    - port swap      change a port on the existing board
+    - new panel      use a different LCD panel
+    - new platform   full redesign / next product platform
+
+  These exact strings drive the badge colour in the workbook. Do not
+  invent other values.
+
+  OUTPUT — call write_block_comparison ONCE with all three blocks plus
+  the summary_narrative.
+
+  Block 1 — block_key = "features_to_add"
+    Rows: every feature the COMPETITOR lists that Philips does NOT list.
+    Treat "Not listed" on the Philips side as "Philips does not list it".
+    Columns (use these exact keys inside each row object):
+      feature           short name of the feature
+      competitor_value  what the competitor ships, with units
+                        (e.g. "Yes, 90 W")
+      change_type       one of: firmware / cert / port swap / new panel
+                        / new platform
+    Sort by spec group: Picture/Display first, then Connectivity, etc.
+
+  Block 2 — block_key = "specs_to_strengthen"
+    Rows: every spec where BOTH sides list a value AND Philips is lower
+    per the rubric above. Skip rows where Philips is equal or higher.
+    Skip the manual-review specs (weight, dynamic contrast).
+    Columns:
+      spec              name of the spec
+      philips_value     with units
+      competitor_value  with units
+      direction         "Higher is better" or "Lower is better"
+      change_type       one of the five tags above
+
+  Block 3 — block_key = "strengths_to_protect"
+    Rows: every spec where Philips wins — either a Philips-only feature,
+    or a shared spec where Philips is ahead per the rubric.
+    Columns:
+      spec
+      philips_value
+      competitor_value
+      why_it_matters    one short plain-English sentence on why this
+                        lead helps Philips at this tier; what the next
+                        product must NOT regress.
+
+  Summary narrative (set `summary_narrative` on the tool call)
+    Pick 3 to 6 items from blocks 1 and 2 that are realistic to do in
+    the next product. Order by priority — most important first. For
+    each item, one short sentence: what to change, and why it matters
+    at this tier. Lead with items whose change_type is firmware or
+    cert (quick wins), then port swap, then panel-level changes.
+
+  RULES:
+  - Always write numbers with units (e.g. "165 Hz", not "165").
+  - Skip the "Not on Philips Leaflet" group — it is a catch-all.
+  - Skip rows where the difference is trivial (e.g. 0.1 W power delta).
+  - If a block has zero rows, return rows=[] and a one-line narrative
+    saying "No items in this block."

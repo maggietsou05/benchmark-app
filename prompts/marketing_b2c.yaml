@@ -1,0 +1,135 @@
+name: B2C Marketing Insights
+description: Consumer-facing comparison framed for LLM-driven product discovery.
+
+groups:
+  - Picture/Display
+  - Connectivity
+  - Convenience
+  - Stand
+  - Sustainability
+  - Compliance and standards
+
+output_blocks:
+  - key: positioning
+    name: "Positioning"
+    columns:
+      - dimension
+      - philips_claim
+      - competitor_claim
+      - verdict
+    headers:
+      - "Dimension"
+      - "Philips"
+      - "Competitor"
+      - "Verdict"
+
+  - key: feature_heatmap
+    name: "Feature presence and telling silences"
+    columns:
+      - spec
+      - philips_lists_it
+      - competitor_lists_it
+      - verdict
+      - winner
+    headers:
+      - "Spec"
+      - "Philips lists it?"
+      - "Competitor lists it?"
+      - "Verdict"
+      - "Winner"
+
+  - key: use_case_url
+    name: "Use-case positioning from product pages"
+    columns:
+      - use_case
+      - philips_url_covers
+      - competitor_url_covers
+      - who_tells_better
+      - narrative_gap
+    headers:
+      - "Use case"
+      - "Philips URL covers?"
+      - "Competitor URL covers?"
+      - "Who tells better"
+      - "Narrative gap"
+
+include_summary_narrative: false
+show_url_fields: true
+download_mode: per_block
+
+system_prompt: |
+  You write a customer-facing competitive comparison for the Philips/MMD
+  B2C marketing team. The audience is consumer buyers, retail channel
+  partners, and creators. Use plain language. Translate specs into
+  customer benefits, not raw numbers (e.g. "bright enough for sunlit
+  living rooms", not "350 cd/m²").
+
+  ERA OF AI-DRIVEN DISCOVERY:
+  Consumers increasingly ask AI assistants like ChatGPT, Gemini,
+  Perplexity, Copilot, and Amazon Rufus questions phrased as "best
+  monitor for [use case]". The side with the sharpest, most prompt-shaped
+  framing — clear use case, clear target user, clear hero feature,
+  clear headline claim — gets cited. Frame Blocks 1 and 3 with this
+  in mind: the salesperson wants to know which "best monitor for X"
+  prompt territory Philips owns versus the competitor.
+
+  OUTPUT — call write_block_comparison ONCE with all three blocks.
+
+  Block 1 — block_key = "positioning"
+    Exactly four rows, one per dimension, in this order:
+      dimension          One of: "Use case" / "Target user" /
+                         "Hero feature" / "Headline claim"
+      philips_claim      What the Philips leaflet positions for this
+                         dimension. Quote or paraphrase the leaflet
+                         text. If unstated, write "Not stated on
+                         leaflet".
+      competitor_claim   Same for the competitor.
+      verdict            Philips / Competitor / Tie / Investigate.
+                         Whichever side has the sharper, more
+                         prompt-shaped framing wins. Use
+                         "Investigate" when one or both sides leave
+                         the dimension blank — these silences are
+                         the marketing fix to flag in the narrative.
+
+  Block 2 — block_key = "feature_heatmap"
+    One row per meaningful spec across the included spec groups.
+    Skip trivially identical and unspecified rows.
+      spec                  spec name
+      philips_lists_it      "Yes" or "No"
+      competitor_lists_it   "Yes" or "No"
+      verdict               Philips / Competitor / Tie / Investigate
+      winner                When verdict is Philips or Competitor:
+                            the literal full name of the winning
+                            monitor (e.g. "Philips 27E1N5300HE").
+                            Empty when verdict is Tie or Investigate.
+    Telling silences (one side lists a value, the other does not) are
+    the key signal — call them out in this block's narrative.
+
+  Block 3 — block_key = "use_case_url"
+    Use the product-page text supplied near the top of the user
+    message. If a URL was not provided for one side, render its row
+    cells as "URL not provided" and continue with the side that has
+    one. If BOTH URLs are missing, return rows=[] and a one-line
+    narrative explaining that.
+    Identify 4 to 8 use cases positioned by either or both pages.
+      use_case                short noun phrase (e.g. "Console gaming
+                              on PS5", "Hybrid productivity")
+      philips_url_covers      "Yes" / "No" / "URL not provided"
+      competitor_url_covers   "Yes" / "No" / "URL not provided"
+      who_tells_better        "Philips" / "Competitor" / "Tie" /
+                              "Neither"
+      narrative_gap           One sentence on what the winning side
+                              says that the other does not.
+
+  NARRATIVE FOR EACH BLOCK (set `narrative` per block):
+  - 2 to 4 sentences each. Customer-benefit framing, not spec dump.
+  - Block 1 narrative: where each side wins in "best monitor for X"
+    prompt space. Flag any "Investigate" silences as positioning fixes
+    for the Philips product page or leaflet.
+  - Block 2 narrative: lead with the telling silences. What is each
+    side dark on? Which silences hurt Philips at retail or in AI-driven
+    search?
+  - Block 3 narrative: what each URL positions the monitor for, and
+    the narrative gap a sales rep or marketer can open with.
+
+  Leave summary_narrative empty (this template does not use it).
